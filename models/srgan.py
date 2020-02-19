@@ -177,15 +177,18 @@ class Discriminator(nn.Module):
             nn.Conv2d(512, 512, kernel_size=3, stride=2, padding=1),
             nn.BatchNorm2d(512),
             nn.LeakyReLU(0.2),
-
             nn.AdaptiveAvgPool2d(1),
+        )
+        self.out = nn.Sequential(
             nn.Conv2d(512, 1024, kernel_size=1),
             nn.LeakyReLU(0.2),
             nn.Conv2d(1024, 1, kernel_size=1)
         )
 
-    def forward(self, x):
-        return self.net(x)
+    def forward(self, x, return_features=False):
+        h = self.net(x)
+        v = self.out(h)
+        return (v, h) if return_features else v
 
 
 class SRGAN(BaseModel):
@@ -272,7 +275,7 @@ class SRGAN(BaseModel):
             mr_scalar = mr_summaries['scalar']
             mr_histogram = mr_summaries['histogram']
             mr_image = mr_summaries['image']
-            torch.cuda.empty_cache()
+            # torch.cuda.empty_cache()
             if summarize:
                 scalar['loss/g/total'] += mr_scalar['loss/g/total']
                 del mr_scalar['loss/g/total']
@@ -349,7 +352,7 @@ class SRGAN(BaseModel):
                                 (fy.unsqueeze(0) + 1) / 2 for fy in
                                 torch.unbind(samples[num_samples // 2:])
                             ], dim=3)
-                        ], dim=2)
+                        ], dim=2).squeeze()
                         sample_2nds.append(sample_2nd)
                         writer.add_image(
                             'g/{}/{}'.format(iter_type, i), collage, step
@@ -361,7 +364,8 @@ class SRGAN(BaseModel):
                         g_x = x.expand(num_samples, -1, -1, -1)
                         samples = self.net_g(g_x)[0]
                         self.net_g.train()
-                        sample_1st, sample_2nd = self.sample_statistics(samples)
+                        sample_1st, sample_2nd = \
+                            self.sample_statistics(samples)
                         sample_log_2nd = (sample_2nd + 1e-4).log()
                         log_2nds = torch.cat([pred_log_2nd, sample_log_2nd], 3)
                         uncertainty = self._build_uncertainty_image(log_2nds)
@@ -382,7 +386,7 @@ class SRGAN(BaseModel):
                                 torch.unbind(samples[num_samples // 2:])
                             ], dim=3)
                         ]
-                        collage = torch.cat(collage, dim=2)
+                        collage = torch.cat(collage, dim=2).squeeze()
                         writer.add_image(
                             'collage/{}/{}'.format(iter_type, i), collage, step
                         )
@@ -402,7 +406,7 @@ class SRGAN(BaseModel):
                                 (pred_1st + 1) / 2,
                                 (uncertainty + 1) / 2,
                             ], dim=3)
-                        ], dim=2)
+                        ], dim=2).squeeze()
                         pred_log_2nds.append(pred_log_2nd)
                         writer.add_image(
                             'p/{}/{}'.format(iter_type, i), collage, step
@@ -410,7 +414,9 @@ class SRGAN(BaseModel):
 
                         # Validation loss
                         if iter_type == 'val':
-                            mle_loss += self.mle_loss(pred_1st, pred_log_2nd, y)
+                            mle_loss += self.mle_loss(
+                                pred_1st, pred_log_2nd, y
+                            )
 
                 if self.mode == MODE_PRED and iter_type == 'val':
                     pred_log_2nd = torch.stack(pred_log_2nds)

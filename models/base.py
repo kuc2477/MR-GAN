@@ -5,7 +5,14 @@ from data import DataIterator
 import os
 from tensorboardX import SummaryWriter
 from constants import MODES, MODE_BASE, MODE_PRED, MODE_MR
-from losses import LOSSES, LaplaceMLELoss, GaussianMLELoss, L1Loss, MSELoss
+from losses import (
+    LOSSES,
+    LaplaceMLELoss,
+    GaussianMLELoss,
+    L1Loss,
+    MSELoss,
+    MMDLoss,
+)
 
 
 class BaseModel(nn.Module):
@@ -52,6 +59,12 @@ class BaseModel(nn.Module):
                 **config.model.mle.options._asdict())
         else:
             raise ValueError('Invalid MLE loss type: %s' % self.mle)
+
+        # MMD loss
+        if getattr(self.loss_config, 'mmd_weight', 0) > 0:
+            self.mmd_loss = MMDLoss(**self.config.model.mmd.options._asdict())
+        else:
+            self.mmd_loss = None
 
         # Other losses
         self._l1_loss = L1Loss()
@@ -302,7 +315,7 @@ class BaseModel(nn.Module):
         # GAN loss
         if self.loss_config.gan_weight > 0:
             d_input = self.build_d_input(x, samples)
-            fake_v = self.net_d(d_input)
+            fake_v, fake_h = self.net_d(d_input, return_features=True)
             gan_loss = self.gan_loss(fake_v, True)
             loss += self.loss_config.gan_weight * gan_loss
 
@@ -322,7 +335,7 @@ class BaseModel(nn.Module):
             scalar['variance/sample'] = sample_2nd.detach().mean()
             histogram['variance_hist/sample'] = sample_2nd.detach().view(-1)
 
-        # Direct MLE without predictor
+        # MR
         if self.loss_config.mle_weight > 0:
             if self.name == 'glcic':
                 masks = x[:num_mr, -1:, ...]
@@ -354,7 +367,7 @@ class BaseModel(nn.Module):
             if summarize:
                 scalar['loss/g/mle'] = mle_loss.detach()
 
-        # Moment matching
+        # pMR
         if self.loss_config.mr_1st_weight or self.loss_config.mr_2nd_weight:
             normalizer = (
                 x[:num_mr, -1:, ...].sum() if self.name == 'glcic' else None
@@ -384,6 +397,16 @@ class BaseModel(nn.Module):
                 scalar['loss/g/mr_1st'] = mr_1st_loss.detach()
                 scalar['loss/g/mr_2nd'] = mr_2nd_loss.detach()
                 scalar['loss/g/mr'] = weighted_mr_loss.detach()
+
+        # MMD
+        if self.loss_config.mmd_weight > 0:
+            mmd_target = y[:num_mr].unsqueeze(1).flatten(2)
+            mmd_loss = self.mmd_loss(samples.flatten(2), mmd_target)
+            weighted_mmd_loss = mmd_loss * self.loss_config.mmd_weight
+            loss += weighted_mmd_loss
+
+            if summarize:
+                scalar['loss/g/mmd'] = mmd_loss.detach()
 
         if summarize:
             scalar['loss/g/total'] = loss.detach()
